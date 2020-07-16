@@ -1,0 +1,187 @@
+groups:
+- name: PgSQL
+  rules:
+  - alert: PgSQLSlowLoginQuery
+    expr: avg_over_time(pg_stat_statements_mean_time_seconds{datname="cms", queryid="3985044216"}[1m]) > 100
+    for: 5m
+    labels:
+      severity: critical
+      team: ops
+    annotations:
+      summary: "Slow login query (instance {{ $labels.instance }})"
+      description: |
+        Login queries are too slow (> 30s). Average is {{ $value }}.
+        Check the PostgreSQL instance {{ $labels.instance }}
+      runbook: pgsql@pgsqlslowloginquery
+      title: PgSQLSlowLoginQuery
+  - alert: PgSQLReplicationLagIsTooBig
+      expr: pg_replication_lag{instance!~"^(ba-patroni|analytics-patroni).*"} > 300 and pg_is_in_recovery == 1
+      for: 15m
+      labels:
+        severity: critical
+        team: ops
+      annotations:
+        description:
+          Replication lag on PostgreSQL Slave {{ $labels.instance }} is
+          {{ humanizeDuration $value }}. If lag is too big, it might be
+          impossible for Slave to recover, it might not be considered as a new
+          Patroni leader, or data loss could occur should such Slave be chosen as next
+          leader.
+        summary: PostgreSQL Slave Replication lag is too big.
+        runbook: pgsql#pgsqlreplicationlagistoobig
+        title: PgSQLReplicationLagIsTooBig
+  - alert: PgSQLReplicationLSNDiffIsTooLarge
+    expr: pg_stat_replication_pg_wal_lsn_diff{instance!~"^(ba-patroni|analytics-patroni).*"} >= 10 * 1024 * 1024
+    for: 15m
+    labels:
+      severity: critical
+      team: ops
+    annotations:
+      description:
+        Replication LSN Diff between {{ $labels.instance }} and {{ $labels.client_addr }}
+        is {{ humanize1024 $value }}. State of replication is {{ $labels.state }}.
+        This means replication is lagging behind and WAL files will be kept
+        until all clients catch up.
+      summary: PostgreSQL Replication LSN Diff is too large.
+      runbook: pgsql#pgsqlreplicationlsndiffistoolarge
+      title: PgSQLReplicationLSNDiffIsTooLarge
+    - alert: PgSQLCommitRateTooLow
+      expr: |
+        rate(pg_stat_database_xact_commit{datname="oauth", sm_env="prod"}[5m]) < 200
+      for: 5m
+      labels:
+        severity: warn
+        team: ops
+      annotations:
+        description: |
+          Commit Rate {{$labels.instance}} for database {{$labels.datname}}
+          is {{$value}} which is suspiciously low. 
+        runbook: pgsql#pgsqlcommitrateislow
+        title: PgSQLCommitRateTooLow
+  - alert: PgSQLNumberOfConnectionsHigh
+      expr: (100 * (sum(pg_stat_database_numbackends) by (instance, job) / pg_settings_max_connections)) > 90
+      for: 10m
+      labels:
+        severity: critical
+        team: ops
+      annotations:
+        description:
+          Number of active/open connections to PostgreSQL on {{ $labels.instance }}
+          is {{ $value }}. It's possible PostgreSQL won't be able to accept any
+          new connections.
+        summary: Number of active connections to Postgresql too high.
+        runbook: pgsql#pgsqlnumberofconnectionshigh
+        title: PgSQLNumberOfConnectionsHigh
+  - alert: PgSQLRollbackRateTooHigh
+      expr: |
+        rate(pg_stat_database_xact_rollback{datname="oauth"}[5m])
+          / ON(instance, datname)
+        rate(pg_stat_database_xact_commit{datname="oauth"}[5m])
+          > 0.05
+      for: 5m
+      labels:
+        severity: warn
+        team: ops
+      annotations:
+        description: |
+          Ratio of transactions being aborted compared to committed is
+          {{$value | printf "%.2f" }} on {{$labels.instance}}
+        runbook: pgsql@pgsqlrollbackrateishigh
+        title: PgSQLRollbackRateTooHigh
+  - alert: PgSQLDeadLocks
+    expr: rate(pg_stat_database_deadlocks{datname!~"template.*|postgres"}[1m]) > 0
+    for: 5m
+    labels:
+      severity: warn
+      team: ops
+    annotations:
+      description: |
+        Deadlocks has been detected on PostgreSQL {{ $labels.instance }}.
+        Number of deadlocks: {{ $value }}
+      summary: "Dead locks (instance {{ $labels.instance }})"
+      runbook: pgsql#pgsqldeadlocksdetected
+      title: PgSQLDeadLocks
+  - alert: PgSQLTableNotVaccumed
+    expr: time() - pg_stat_user_tables_last_autovacuum{datname="oauth", sm_env="prod"} > 60 * 60 * 24
+    for: 5m
+    labels:
+      severity: warn
+      team: ops
+    annotations:
+      summary: "Table not vaccumed (instance {{ $labels.instance }})"
+      description: |
+        Table has not been vaccum for 24 hours {{ $labels.relname }}
+        (vacuumed before {{ humanizeDuration $value }}). There may be not enough vacuum workers.
+      runbook: pgsql#pgsqltablenotvacuumed
+      title: PgSQLTableNotVaccumed
+  - alert: PgSQLArchiverErrorCount
+    expr: changes(pg_stat_archiver_failed_count[15m]) > 0
+    for: 60m
+    labels:
+      severity: moderate
+      team: ops
+    annotations:
+      description:
+        PostgresSQL Archiver error count on {{ $labels.instance }} is too high.
+        Please, investigate what the problem is since WAL files will be kept
+        until successfully archived. Not archiving WAL files also affects
+        incremental backup.
+      summary: PostgreSQL Archiver error count is too high.
+      runbook: pgsql#pgsqlarchivererrorcount
+      title: PgSQLArchiverErrorCount
+  - alert: PgSQLDown
+    expr: pg_up != 1
+    for: 1m
+    labels:
+      severity: critical
+      team: ops
+    annotations:
+      description:
+        Postgres Exporter on {{ $labels.instance }} is unable to reach
+        PostgreSQL. This can be configuration issue or PostgreSQL is down. Other
+        PostgreSQL alerts might not be operational!
+      summary: PostgreSQL is DOWN.
+      runbook: pgsql#pgsqldown
+      title: PgSQLDown
+  - alert: PgSQLExporterFailedToLoadUserQueries
+    expr: pg_exporter_user_queries_load_error != 0
+    for: 15m
+    labels:
+      severity: high
+      team: ops
+    annotations:
+      description:
+        Postgres Exporter on {{ $labels.instance }} was unable to load user
+        defined queries. Custom metrics will not be available.
+        Please, investigate and fix the issue.
+      summary: Postgres Exporter failed to load user defined queries from file.
+      runbook: pgsql#pgsqlexporterfailedtoloaduserqueries
+      title: PgSQLExporterFailedToLoadUserQueries
+  - alert: PgSQLExporterScrapeError
+    expr: pg_exporter_last_scrape_error != 0
+    for: 1m
+    labels:
+      severity: high
+      team: ops
+    annotations:
+      description:
+        Scrape error has occurred on {{ $labels.instance }}. Some metrics might
+        not be available. Please, investigate and fix the issue.
+      summary: Postgres Exporter scrape error has occurred.
+      runbook: pgsql#pgsqlexporterscrapeerror
+      title: PgSQLExporterScrapeError
+  - alert: PgSQLUptime
+    expr: time() - pg_postmaster_start_time_seconds < 300
+    for: 1m
+    labels:
+      severity: informational
+      team: ops
+    annotations:
+      description:
+        PostgreSQL postmaster on {{ $labels.instance }} has been restarted
+        {{ humanizeDuration $value }} ago. If this has not been caused by
+        operator, you should investigate why PostgreSQL has been
+        restarted.
+      summary: PostgreSQL postmaster has been restarted less than 5 minutes ago.
+      runbook: pgsql#pgsqluptime
+      title: PgSQLUptime
